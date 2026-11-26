@@ -1,4 +1,4 @@
-name: HyperCore Daily
+name: HyperCore Build
 
 on:
   schedule:
@@ -24,7 +24,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -138,7 +138,7 @@ jobs:
         run: |
           TAG="${{ steps.pkg.outputs.version }}"
           SHA="${{ steps.sync.outputs.sha }}"
-          NOTES="Auto build dari commit ${SHA::7} ($(date -u +%F))"
+          NOTES="commit ${SHA::7} ($(date -u +%F))"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" out/HyperCore-* --clobber
             gh release edit "$TAG" --notes "$NOTES"

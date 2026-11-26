@@ -1,0 +1,28 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "00:00"
+      timezone: Asia/Jakarta
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: npm
+    directory: /webui
+    schedule:
+      interval: weekly
+      day: monday
+      time: "00:00"
+      timezone: Asia/Jakarta
+    groups:
+      webui:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    commit-message:
+      prefix: "build(webui)"

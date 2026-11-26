@@ -135,6 +135,7 @@ jobs:
         if: steps.decide.outputs.build == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           TAG="${{ steps.pkg.outputs.version }}"
           SHA="${{ steps.sync.outputs.sha }}"

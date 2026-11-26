@@ -1,0 +1,152 @@
+name: HyperCore Daily
+
+on:
+  schedule:
+    - cron: '0 17 * * *'
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Build Hypercore'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hypercore-build
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: itswill00/hypercore
+  UPSTREAM_BRANCH: main
+  NDK_API: '29'
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync upstream
+        id: sync
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+          
+          BEHIND=$(git rev-list --count "HEAD..upstream/${UPSTREAM_BRANCH}")
+          
+          if [ "$BEHIND" -gt 0 ]; then
+            if git merge --no-edit "upstream/${UPSTREAM_BRANCH}"; then
+              git push origin "HEAD:${GITHUB_REF_NAME}"
+            else
+              git merge --abort
+            fi
+          fi
+          echo "behind=${BEHIND}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check Commit
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: .ci-built-marker
+          key: built-${{ steps.sync.outputs.sha }}
+
+      - name: Checking Latest Build
+        id: decide
+        run: |
+          if [ "${{ inputs.force_build }}" = "true" ] || [ "${{ steps.cache.outputs.cache-hit }}" != "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node
+        if: steps.decide.outputs.build == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Setup Java
+        if: steps.decide.outputs.build == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Toolchain
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          CLANG="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${NDK_API}-clang"
+          
+          [ -x "$CLANG" ] || { echo "::error::NDK clang tidak ketemu: $CLANG"; exit 1; }
+            mkdir -p "$RUNNER_TEMP/ndkbin"
+            printf '#!/bin/sh\nexec "%s" "$@"\n' "$CLANG" > "$RUNNER_TEMP/ndkbin/clang"
+            chmod +x "$RUNNER_TEMP/ndkbin/clang"
+          echo "$RUNNER_TEMP/ndkbin" >> "$GITHUB_PATH"
+
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          JAR=$(ls "$SDK"/platforms/android-*/android.jar 2>/dev/null | sort -V | tail -n1 || true)
+          BT=$(ls -d "$SDK"/build-tools/* 2>/dev/null | sort -V | tail -n1 || true)
+          [ -n "$JAR" ] && echo "ANDROID_JAR=$JAR" >> "$GITHUB_ENV"
+          [ -n "$BT" ]  && echo "$BT" >> "$GITHUB_PATH"
+          echo "NDK: $NDK | android.jar: $JAR | build-tools: $BT"
+
+      - name: Build
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          chmod +x build.sh
+          ./build.sh 2>&1 | tee build.log
+          readelf -h system/bin/libhypercore.so | grep -q AArch64 \
+            || { echo "[ERROR]"; exit 1; }
+          grep -q 'hypermoon dex: built' build.log \
+            || echo "[WARN] hypermoon.dex missing"
+
+      - name: Output
+        id: pkg
+        if: steps.decide.outputs.build == 'true'
+        run: |
+          VERSION=$(grep '^version=' module.prop | cut -d= -f2)
+          ZIP=$(ls out/HyperCore-*.zip | head -n1)
+          (cd out && sha256sum "$(basename "$ZIP")" > "$(basename "$ZIP").sha256")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "zip=${ZIP}" >> "$GITHUB_OUTPUT"
+          unzip -l "$ZIP"
+
+      - name: Upload artifact
+        if: steps.decide.outputs.build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: HyperCore-${{ steps.pkg.outputs.version }}
+          path: out/HyperCore-*
+          retention-days: 14
+
+      - name: Publish
+        if: steps.decide.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.pkg.outputs.version }}"
+          SHA="${{ steps.sync.outputs.sha }}"
+          NOTES="Auto build dari commit ${SHA::7} ($(date -u +%F))"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/HyperCore-* --clobber
+            gh release edit "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" out/HyperCore-* \
+              --title "HyperCore ${TAG}" --notes "$NOTES" --target "$SHA"
+          fi
+
+      - name: Marking Build
+        if: steps.decide.outputs.build == 'true'
+        run: echo "${{ steps.sync.outputs.sha }}" > .ci-built-marker
